@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Chat</title>
+    </head>
+    <body>
+        <button onclick="sendMessage(event)">
+            BUZZ
+        </button>
+        <script>
+            var ws = new WebSocket(`ws://localhost:8000/ws/`);
+            var userId = null;
+
+            ws.onmessage = function(event) {
+                message = JSON.parse(event.data);
+                console.log(message);
+
+                if (message.message_type === "connection_ack") {
+                    userId = message.message_data["user_id"];
+                    console.log(`userId=${userId}`);
+                }
+
+                if (message.message_type === "game_state_locked") {
+                    if (message.message_data["user_id"] === userId) {
+                        document.body.style.backgroundColor = "lime";
+                    } else {
+                        document.body.style.backgroundColor = "red";
+                    }
+                }
+
+                if (message.message_type === "game_state_unlocked") {
+                    document.body.style.backgroundColor = "white";
+                }
+            };
+            function sendMessage(event) {
+                ws.send(`{"message_type": "buzzer"}`)
+                event.preventDefault()
+            }
+        </script>
+    </body>
+</html>
