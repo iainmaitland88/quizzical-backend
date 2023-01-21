@@ -10,10 +10,14 @@
             "request": "launch",
             "module": "uvicorn",
             "args": [
+                "--reload",
                 "app.main:app"
             ],
             "jinja": true,
-            "justMyCode": true
+            "justMyCode": true,
+            "env": {
+                "APP_NAME": "quizzical-backend"
+            }
         }
     ]
 }
