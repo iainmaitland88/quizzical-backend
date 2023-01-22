@@ -15,12 +15,17 @@ def html_response(path: str) -> HTMLResponse:
 
 
 class MessageType(str, Enum):
+    invalid_message = "invalid_message"
     connection_ack = "connection_ack"
     buzzer = "buzzer"
-    game_state_locked = "game_state_locked"
-    game_state_unlocked = "game_state_unlocked"
+    buzzer_won = "buzzer_won"
+    buzzer_lost = "buzzer_lost"
+    buzzer_reset = "buzzer_reset"
     user_joined = "user_joined"
     user_left = "user_left"
+    user_registration_attempt = "user_registration_attempt"
+    user_registration_success = "user_registration_success"
+    user_registration_error = "user_registration_error"
 
 
 class Message(BaseModel):
@@ -29,8 +34,8 @@ class Message(BaseModel):
 
 
 class Connection:
-    def __init__(self, user_id: str, websocket: WebSocket) -> None:
-        self.user_id = user_id
+    def __init__(self, websocket: WebSocket) -> None:
+        self.id = str(uuid4())
         self.websocket = websocket
 
 
@@ -49,20 +54,25 @@ class ConnectionManager:
         # TODO handle websockets.exceptions.ConnectionClosedError:
         await connection.websocket.send_json(message.dict())
 
-    async def broadcast(self, message: Message):
+    async def broadcast(
+        self, message: Message, excluding: Optional[List[Connection]] = None
+    ):
         # TODO handle websockets.exceptions.ConnectionClosedError:
-        for connection in self.active_connections:
+        if not excluding:
+            excluding = []
+
+        for connection in [c for c in self.active_connections if c not in excluding]:
             await connection.websocket.send_json(message.dict())
 
 
 class GameState:
     def __init__(self) -> None:
         self._locked = False
-        self._user_id: Optional[str] = None
+        self._connection_id: Optional[str] = None
 
-    def lock(self, user_id: str) -> None:
+    def lock(self, connection_id: str) -> None:
         self._locked = True
-        self._user_id = user_id
+        self._connection_id = connection_id
 
     def unlock(self) -> None:
         self._locked = False
@@ -72,8 +82,10 @@ class GameState:
         return self._locked is True
 
 
-connection_manager = ConnectionManager()
-game_state = GameState()
+connection_manager: ConnectionManager = ConnectionManager()
+game_state: GameState = GameState()
+players: List[str] = []
+players_connection: dict[str, str] = {}
 
 
 @app.get("/")
@@ -83,37 +95,76 @@ async def get():
 
 async def handle_buzzer(connection: Connection, message: Message):
     if not game_state.locked:
-        game_state.lock(connection.user_id)
-        message = Message(
-            message_type=MessageType.game_state_locked,
-            message_data={"user_id": connection.user_id},
+        game_state.lock(connection.id)
+        await connection_manager.broadcast(
+            Message(message_type=MessageType.buzzer_lost), [connection]
         )
-        await connection_manager.broadcast(message)
+        await connection_manager.send_personal_message(
+            Message(message_type=MessageType.buzzer_won), connection
+        )
+
+
+async def handle_user_registration_attempt(connection: Connection, message: Message):
+    username = message.message_data["username"]
+
+    if username in players:
+        await connection_manager.send_personal_message(
+            Message(
+                message_type=MessageType.user_registration_error,
+                message_data={"errors": ["username is taken"]},
+            ),
+            connection,
+        )
+    else:
+        players.append(username)
+        players_connection[connection.id] = username
+        await connection_manager.send_personal_message(
+            Message(message_type=MessageType.user_registration_success), connection
+        )
+        await connection_manager.broadcast(
+            Message(
+                message_type=MessageType.user_joined,
+                message_data={"username": username},
+            )
+        )
 
 
 async def handle_connection(connection: Connection) -> None:
     try:
+        print(f"players={players}")
+        print(f"players_connections={players_connection}")
+
         raw_message = await connection.websocket.receive_text()
         message = Message.parse_raw(raw_message)
+
+        if message.message_type == MessageType.user_registration_attempt:
+            await handle_user_registration_attempt(connection, message)
+
         if message.message_type == MessageType.buzzer:
             await handle_buzzer(connection, message)
+
+        print(f"players={players}")
+        print(f"players_connections={players_connection}")
     except ValidationError as e:
-        await connection_manager.send_personal_message(e.json(), connection)
+        await connection_manager.send_personal_message(
+            Message(
+                message_type=MessageType.invalid_message,
+                message_data={"errors": e.json()},
+            ),
+            connection,
+        )
 
 
 @app.websocket("/ws/")
 async def websocket_endpoint(websocket: WebSocket):
-    user_id = str(uuid4())
-    connection = Connection(user_id, websocket)
+    connection = Connection(websocket)
     await connection_manager.connect(connection)
     await connection_manager.send_personal_message(
         Message(
-            message_type=MessageType.connection_ack, message_data={"user_id": user_id}
+            message_type=MessageType.connection_ack,
+            message_data={"connection_id": connection.id},
         ),
         connection,
-    )
-    await connection_manager.broadcast(
-        Message(message_type=MessageType.user_joined, message_data={"user_id": user_id})
     )
 
     try:
@@ -121,16 +172,20 @@ async def websocket_endpoint(websocket: WebSocket):
             await handle_connection(connection)
     except WebSocketDisconnect:
         connection_manager.disconnect(connection)
-        await connection_manager.broadcast(
-            Message(
-                message_type=MessageType.user_left, message_data={"user_id": user_id}
+        try:
+            username = players_connection.pop(connection.id)
+            players.remove(username)
+            await connection_manager.broadcast(
+                Message(
+                    message_type=MessageType.user_left,
+                    message_data={"username": username},
+                )
             )
-        )
+        except (KeyError, ValueError):
+            pass
 
 
 @app.post("/unlock")
 async def unlock():
     game_state.unlock()
-    await connection_manager.broadcast(
-        Message(message_type=MessageType.game_state_unlocked)
-    )
+    await connection_manager.broadcast(Message(message_type=MessageType.buzzer_reset))
