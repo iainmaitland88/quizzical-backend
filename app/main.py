@@ -2,11 +2,22 @@ from enum import Enum
 from typing import Any, List, Optional
 from uuid import uuid4
 
+import jwt
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ValidationError
 
 app = FastAPI()
+
+origins = ["http://localhost:3000"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def html_response(path: str) -> HTMLResponse:
@@ -31,6 +42,14 @@ class MessageType(str, Enum):
 class Message(BaseModel):
     message_type: MessageType
     message_data: Optional[dict[Any, Any]]
+
+
+class RegisterUserRequest(BaseModel):
+    username: str
+
+
+class RegisterUserSuccessResponse(BaseModel):
+    jwt: str
 
 
 class Connection:
@@ -183,6 +202,14 @@ async def websocket_endpoint(websocket: WebSocket):
             )
         except (KeyError, ValueError):
             pass
+
+
+@app.post("/users")
+def register_user(register_user_request: RegisterUserRequest):
+    encoded_jwt = jwt.encode(
+        {"username": register_user_request.username}, "secret", algorithm="HS256"
+    )
+    return RegisterUserSuccessResponse(jwt=encoded_jwt)
 
 
 @app.post("/unlock")
