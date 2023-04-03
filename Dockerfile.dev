@@ -1,0 +1,5 @@
+FROM iainjames88/neovim-base:latest
+
+WORKDIR /code
+
+ENTRYPOINT ["tail", "-f", "/dev/null"]

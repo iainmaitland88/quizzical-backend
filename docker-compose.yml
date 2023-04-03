@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.dev
+    volumes:
+      - .:/code/
+    ports:
+      - "80:80"
+    stdin_open: true
+    tty: true
